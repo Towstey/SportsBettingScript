@@ -1,0 +1,193 @@
+import requests
+import tkinter as tk
+from tkinter import ttk
+from tkinter import messagebox
+
+# Constants
+API_KEY = '18a863ea202b488c96877900623ba865'
+BASE_URL = 'https://api.sportsdata.io/v3/mlb/scores/json'
+
+# Fetch the current season
+def fetch_current_season():
+    url = f'{BASE_URL}/CurrentSeason?key={API_KEY}'
+    response = requests.get(url)
+    response.raise_for_status()
+    return response.json()['Season']
+
+# Fetch team profiles
+def fetch_team_profiles():
+    url = f'{BASE_URL}/teams?key={API_KEY}'
+    response = requests.get(url)
+    response.raise_for_status()
+    return response.json()
+
+# Fetch player details
+def fetch_player_details():
+    url = f'{BASE_URL}/PlayersByActive?key={API_KEY}'
+    response = requests.get(url)
+    response.raise_for_status()
+    return response.json()
+
+# Fetch team stats for a given season
+def fetch_team_stats(season, team_id):
+    url = f'{BASE_URL}/Standings/{season}?key={API_KEY}'
+    response = requests.get(url)
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    standings_data = response.json()
+    for team in standings_data:
+        if team['TeamID'] == team_id:
+            return team
+    return None
+
+# Convert streak to numerical value
+def convert_streak(streak):
+    if streak.startswith('W'):
+        return int(streak[1:])
+    elif streak.startswith('L'):
+        return -int(streak[1:])
+    return 0
+
+# Convert values to float
+def convert_to_float(value):
+    try:
+        return float(value)
+    except ValueError:
+        return 0
+
+# Calculate and compare stats
+def calculate_and_compare_stats(team1_name, team2_name, stats1, stats2):
+    comparisons = {}
+
+    # Define weights for each stat
+    weights = {
+        'Wins': 1.5,
+        'Losses': 1.2,
+        'Streak': 1.0,
+        'LastTenGamesWins': 1.2,
+        'LastTenGamesLosses': 1.2,
+        'RunsScored': 1.0,
+        'RunsAgainst': 1.5,
+        'AwayWins': 1.0,
+        'HomeWins': 1.0
+    }
+
+    # Normalize and weight stats
+    stats_keys = list(weights.keys())
+    team1_normalized = {key: convert_to_float(stats1.get(key, 0)) for key in stats_keys}
+    team2_normalized = {key: convert_to_float(stats2.get(key, 0)) for key in stats_keys}
+
+    # Example normalization (scale from 0 to 1)
+    all_team_stats = [team1_normalized, team2_normalized]
+    for key in stats_keys:
+        values = [team1_normalized[key], team2_normalized[key]]
+        min_value, max_value = min(values), max(values)
+        if max_value > min_value:
+            for team_stats in all_team_stats:
+                team_stats[key] = (team_stats[key] - min_value) / (max_value - min_value)
+
+    # Calculate weighted scores
+    team1_weighted_score = sum(team1_normalized[key] * weights[key] for key in stats_keys)
+    team2_weighted_score = sum(team2_normalized[key] * weights[key] for key in stats_keys)
+
+    # Calculate percentage chance of winning
+    total_score = team1_weighted_score + team2_weighted_score
+    if total_score > 0:
+        team1_percentage = (team1_weighted_score / total_score) * 100
+        team2_percentage = (team2_weighted_score / total_score) * 100
+    else:
+        team1_percentage = team2_percentage = 50  # Even chance if no stats
+
+    # Calculate the percentage chance difference if one team is better
+    chance_difference = team1_percentage - team2_percentage if team1_weighted_score > team2_weighted_score else team2_percentage - team1_percentage
+
+    return comparisons, team1_percentage, team2_percentage, chance_difference
+
+# Function to display stats in the terminal window
+def display_stats(stats_text):
+    output_text.delete(1.0, tk.END)
+    output_text.insert(tk.END, stats_text)
+
+# Function to handle button click event
+def on_compare_click():
+    team1_name = team1_var.get()
+    team2_name = team2_var.get()
+
+    if team1_name == team2_name:
+        messagebox.showerror("Error", "Please select two different teams.")
+        return
+
+    team1_id = team_id_dict[team1_name]
+    team2_id = team_id_dict[team2_name]
+
+    season = fetch_current_season()
+    team_profiles = fetch_team_profiles()
+    all_players = fetch_player_details()
+
+    team1_stats = fetch_team_stats(season, team1_id)
+    team2_stats = fetch_team_stats(season, team2_id)
+
+    if not team1_stats:
+        display_stats(f"No stats available for Team {team1_name} (ID {team1_id})")
+        return
+    if not team2_stats:
+        display_stats(f"No stats available for Team {team2_name} (ID {team2_id})")
+        return
+
+    comparisons, team1_percentage, team2_percentage, chance_difference = calculate_and_compare_stats(
+        team1_name, team2_name, team1_stats, team2_stats)
+
+    # Print detailed comparison results
+    stats_text = f"Detailed Comparison Results:\n"
+    for key, (value1, value2, better) in comparisons.items():
+        stats_text += f"{key}: {team1_name} ({value1:.2f}) vs {team2_name} ({value2:.2f}) - Better: {better}\n"
+
+    stats_text += f"\nPercentage chance of winning:\n"
+    stats_text += f"{team1_name}: {team1_percentage:.2f}%\n"
+    stats_text += f"{team2_name}: {team2_percentage:.2f}%\n"
+    stats_text += f"Chance Difference: {chance_difference:.2f}%"
+
+    display_stats(stats_text)
+
+    # Update the progress bar
+    bar_canvas.delete("all")
+    max_value = max(team1_percentage, team2_percentage)
+    team1_bar_width = (team1_percentage / max_value) * 300
+    team2_bar_width = (team2_percentage / max_value) * 300
+    bar_canvas.create_rectangle(0, 0, team1_bar_width, 20, fill="green")
+    bar_canvas.create_rectangle(300 - team2_bar_width, 0, 300, 20, fill="red")
+
+# GUI Setup
+root = tk.Tk()
+root.title("MLB Team Stats Comparison")
+
+# Fetch team profiles for dropdown
+team_profiles = fetch_team_profiles()
+team_id_dict = {team['Name']: team['TeamID'] for team in team_profiles}
+
+# Create dropdown menus
+team1_var = tk.StringVar()
+team2_var = tk.StringVar()
+
+team1_dropdown = ttk.Combobox(root, textvariable=team1_var)
+team1_dropdown['values'] = list(team_id_dict.keys())
+team1_dropdown.grid(row=0, column=0, padx=10, pady=10)
+
+team2_dropdown = ttk.Combobox(root, textvariable=team2_var)
+team2_dropdown['values'] = list(team_id_dict.keys())
+team2_dropdown.grid(row=0, column=1, padx=10, pady=10)
+
+# Create compare button
+compare_button = tk.Button(root, text="Compare", command=on_compare_click)
+compare_button.grid(row=1, column=0, columnspan=2, pady=10)
+
+# Create output area
+output_text = tk.Text(root, height=15, width=60)
+output_text.grid(row=2, column=0, columnspan=2, padx=10, pady=10)
+
+# Create progress bar
+bar_canvas = tk.Canvas(root, width=300, height=20)
+bar_canvas.grid(row=3, column=0, columnspan=2, pady=10)
+
+root.mainloop()
